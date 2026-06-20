@@ -1,0 +1,91 @@
+name: Publish subpass SRP packages to Yunxiao
+
+# Publishes the Quest subpass fork of the SRP packages to the team's Aliyun
+# Yunxiao npm registry so projects can pull them as fast registry packages
+# instead of cloning the whole multi-GB Unity-Graphics git repo.
+#
+# Versions are kept native (17.0.4 / 17.0.3) so the packages' inter-dependencies
+# resolve to each other automatically once the consumer scopes
+# com.unity.render-pipelines.* + com.unity.shadergraph to this registry.
+# npm versions are immutable: to ship a new fix, bump the package version in the
+# fork (which you do on each Unity upgrade anyway) and re-pin it in the consumer.
+
+on:
+  push:
+    branches:
+      - '**subpass**'
+  workflow_dispatch:
+
+env:
+  # Reusing the existing GorimonCore Yunxiao npm repo (per team decision).
+  REGISTRY_URL: https://packages.aliyun.com/6a0594e5cd072c2aa5370b97/npm/gorimon-core/
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - name: com.unity.render-pipelines.core
+            dir: Packages/com.unity.render-pipelines.core
+          - name: com.unity.render-pipelines.universal
+            dir: Packages/com.unity.render-pipelines.universal
+          - name: com.unity.render-pipelines.universal-config
+            dir: Packages/com.unity.render-pipelines.universal-config
+          - name: com.unity.shadergraph
+            dir: Packages/com.unity.shadergraph
+    env:
+      PACKAGE_NAME: ${{ matrix.package.name }}
+      PACKAGE_DIR: ${{ matrix.package.dir }}
+
+    steps:
+      - name: Checkout package (sparse)
+        uses: actions/checkout@v4
+        with:
+          # Only the one package dir — avoids checking out the multi-GB repo.
+          sparse-checkout: ${{ matrix.package.dir }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Configure Yunxiao npm credentials
+        env:
+          YUNXIAO_NPM_USERNAME: ${{ secrets.YUNXIAO_NPM_USERNAME }}
+          YUNXIAO_NPM_PASSWORD: ${{ secrets.YUNXIAO_NPM_PASSWORD }}
+          YUNXIAO_NPM_EMAIL: ${{ secrets.YUNXIAO_NPM_EMAIL }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$YUNXIAO_NPM_USERNAME" ] || [ -z "$YUNXIAO_NPM_PASSWORD" ]; then
+            echo "YUNXIAO_NPM_USERNAME and YUNXIAO_NPM_PASSWORD secrets are required."
+            exit 1
+          fi
+
+          AUTH="$(printf '%s:%s' "$YUNXIAO_NPM_USERNAME" "$YUNXIAO_NPM_PASSWORD" | base64 | tr -d '\n')"
+          REGISTRY_AUTH_PATH="${REGISTRY_URL#https:}"
+          REGISTRY_AUTH_PATH="${REGISTRY_AUTH_PATH#http:}"
+
+          {
+            echo "registry=$REGISTRY_URL"
+            echo "${REGISTRY_AUTH_PATH}:_auth=$AUTH"
+            echo "${REGISTRY_AUTH_PATH}:email=${YUNXIAO_NPM_EMAIL:-dev@soulsync.com}"
+            echo "${REGISTRY_AUTH_PATH}:always-auth=true"
+          } > "$HOME/.npmrc"
+
+      - name: Publish package to Yunxiao
+        run: |
+          set -euo pipefail
+
+          PACKAGE_VERSION="$(node -p "require('./$PACKAGE_DIR/package.json').version")"
+          echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION"
+
+          npm pack "./$PACKAGE_DIR" --dry-run
+
+          if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version --registry "$REGISTRY_URL" > /dev/null 2>&1; then
+            echo "$PACKAGE_NAME@$PACKAGE_VERSION already exists in registry; skipping publish."
+          else
+            npm publish "./$PACKAGE_DIR" --registry "$REGISTRY_URL"
+          fi
