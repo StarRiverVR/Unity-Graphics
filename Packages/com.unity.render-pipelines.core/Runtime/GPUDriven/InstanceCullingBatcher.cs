@@ -445,10 +445,11 @@ namespace UnityEngine.Rendering
                 overridenComponents |= InstanceComponentGroup.Lightmap;
             }
 
-            // Scan all materials once to retrieve whether this renderer is indirect-compatible or not (and store it in the RangeKey).
+            // Scan all materials once to cache the packed material data per submesh (consumed by the draw loop below).
+            // 6000.0.77f1: per-material GPUDrivenPackedMaterialData.isIndirectSupported was removed; indirect eligibility
+            // now comes from the per-renderer packedRendererData.supportsIndirect flag (see RangeKey below).
             Span<GPUDrivenPackedMaterialData> packedMaterialDatas = stackalloc GPUDrivenPackedMaterialData[materialsCount];
 
-            var supportsIndirect = true;
             for (int matIndex = 0; matIndex < materialsCount; ++matIndex)
             {
                 if (matIndex >= submeshCount)
@@ -470,8 +471,6 @@ namespace UnityEngine.Rendering
                     bool isFound = packedMaterialDataHash.TryGetValue(materialID, out packedMaterialData);
                     Assert.IsTrue(isFound);
                 }
-                supportsIndirect &= packedMaterialData.isIndirectSupported;
-
                 packedMaterialDatas[matIndex] = packedMaterialData;
             }
 
@@ -483,7 +482,7 @@ namespace UnityEngine.Rendering
                 shadowCastingMode = packedRendererData.shadowCastingMode,
                 staticShadowCaster = packedRendererData.staticShadowCaster,
                 rendererPriority = rendererPriority,
-                supportsIndirect = supportsIndirect
+                supportsIndirect = packedRendererData.supportsIndirect
             };
 
             ref DrawRange drawRange = ref EditDrawRange(rangeKey);
